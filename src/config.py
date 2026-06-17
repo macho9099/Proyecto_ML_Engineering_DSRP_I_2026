@@ -48,8 +48,17 @@ LAGGED_TEST_LABELS_DIR = RAW_DATA_DIR / "lagged_test_labels"
 
 # --- Constantes del problema -------------------------------------------------
 ID_COL = "date_id"
+
+# Catálogo completo de targets de la competencia (referencia).
 N_TARGETS = 424  # target_0 .. target_423
-TARGET_COLS = [f"target_{i}" for i in range(N_TARGETS)]
+ALL_TARGET_COLS = [f"target_{i}" for i in range(N_TARGETS)]
+
+# --- Problema SIMPLIFICADO: un solo objetivo ---------------------------------
+# Modelamos un único target en lugar de los 424.
+#   target_4 = "LME_AH_Close - JPX_Gold_Standard_Futures_Close" (lag 1)
+TARGET = "target_4"
+TARGET_DEFINITION = "LME_AH_Close - JPX_Gold_Standard_Futures_Close"
+TARGET_LAG = 1
 
 
 def ensure_output_dirs() -> None:

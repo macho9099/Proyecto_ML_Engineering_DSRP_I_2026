@@ -1,18 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Entrenamiento de modelos para el reto MITSUI Commodity Prediction.
+"""Entrenamiento y benchmark de modelos para el reto MITSUI Commodity Prediction.
 
-Problema: regresión multi-objetivo (424 targets) sobre series de tiempo
-financieras. Se entrena un modelo por target (envuelto en MultiOutput) con
-una división temporal (sin barajar) para respetar el orden cronológico.
+Problema SIMPLIFICADO: regresión de un **único** target sobre series de
+tiempo financieras:
 
-El modelo se encapsula en un **scikit-learn Pipeline** que une el
-preprocesamiento numérico (imputación) con el estimador, de modo que las
-mismas transformaciones se apliquen automáticamente en entrenamiento y en
-inferencia (un único objeto que se guarda/carga con joblib).
+    config.TARGET = "target_4"
+        = "LME_AH_Close - JPX_Gold_Standard_Futures_Close" (lag 1)
+
+Cada algoritmo se encapsula en un **scikit-learn Pipeline** que une el
+preprocesamiento numérico (imputación y, cuando aplica, escalado) con el
+estimador, de modo que las mismas transformaciones se apliquen en
+entrenamiento e inferencia.
+
+Algoritmos del benchmark (ver MODEL_NAMES):
+    - linear_regression       -> LinearRegression       (con StandardScaler)
+    - decision_tree           -> DecisionTreeRegressor
+    - hist_gradient_boosting  -> HistGradientBoostingRegressor
 
 Funciones reutilizables:
-    build_pipeline()  -> Pipeline (imputer -> MultiOutput(HGB))
-    train(X, y)       -> pipeline entrenado + métricas de validación
+    build_pipeline(model_name) -> Pipeline
+    train(X, y, model_name)    -> pipeline entrenado + métricas
+    benchmark(X, y)            -> compara todos los modelos
 """
 from __future__ import annotations
 
@@ -24,82 +32,141 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.multioutput import MultiOutputRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeRegressor
 
 from src import config
 
 logger = logging.getLogger(__name__)
+
+# Algoritmos disponibles en el benchmark
+MODEL_NAMES = ["linear_regression", "decision_tree", "hist_gradient_boosting"]
 
 
 def _feature_cols(X: pd.DataFrame) -> list[str]:
     return [c for c in X.columns if c != config.ID_COL]
 
 
-def build_pipeline(
-    max_iter: int = 200,
-    learning_rate: float = 0.05,
-) -> Pipeline:
-    """Construye el Pipeline de modelado.
+def _make_estimator(model_name: str):
+    """Devuelve (estimador, needs_scaling) para el algoritmo indicado."""
+    if model_name == "linear_regression":
+        return LinearRegression(), True
+    if model_name == "decision_tree":
+        return DecisionTreeRegressor(max_depth=8, random_state=0), False
+    if model_name == "hist_gradient_boosting":
+        return (
+            HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, random_state=0),
+            False,
+        )
+    raise ValueError(f"Modelo desconocido: {model_name!r}. Opciones: {MODEL_NAMES}")
+
+
+def build_pipeline(model_name: str = "hist_gradient_boosting") -> Pipeline:
+    """Construye el Pipeline para `model_name`.
 
     Pasos:
-      1. ``imputer``  -> SimpleImputer(median): red de seguridad para NaN
-         residuales (las features ya se rellenan en make_dataset.preprocess).
-      2. ``model``    -> MultiOutputRegressor(HistGradientBoostingRegressor):
-         un regresor por target. HGB es robusto, no requiere escalado y
-         maneja relaciones no lineales.
-
-    Para modelos lineales (p. ej. Ridge) basta con insertar un
-    ``StandardScaler`` entre el imputer y el estimador.
+      1. ``imputer`` -> SimpleImputer(median): red de seguridad para NaN.
+      2. ``scaler``  -> StandardScaler: SOLO para modelos lineales.
+      3. ``model``   -> el estimador del algoritmo elegido.
     """
-    base = HistGradientBoostingRegressor(max_iter=max_iter, learning_rate=learning_rate)
-    return Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("model", MultiOutputRegressor(base, n_jobs=-1)),
-        ]
-    )
+    estimator, needs_scaling = _make_estimator(model_name)
+    steps = [("imputer", SimpleImputer(strategy="median"))]
+    if needs_scaling:
+        steps.append(("scaler", StandardScaler()))
+    steps.append(("model", estimator))
+    return Pipeline(steps)
+
+
+def _split_xy(X: pd.DataFrame, y: pd.DataFrame, target: str, valid_fraction: float):
+    """Alinea X/y, descarta filas con target NaN y hace el split temporal."""
+    feats = _feature_cols(X)
+    target_series = y[target]
+    valid_mask = target_series.notna().to_numpy()
+    Xv = X[feats].to_numpy()[valid_mask]
+    yv = target_series.to_numpy()[valid_mask]
+
+    n = len(Xv)
+    cut = int(n * (1 - valid_fraction))
+    return Xv[:cut], Xv[cut:], yv[:cut], yv[cut:]
+
+
+def _evaluate(pipeline: Pipeline, X_va, y_va, model_name: str, target: str) -> dict:
+    """Métricas de capacidad predictiva sobre el conjunto de validación.
+
+    - valid_rmse : raíz del error cuadrático medio (métrica principal).
+    - valid_mae  : error absoluto medio (robusto a outliers).
+    - valid_r2   : R^2, proporción de varianza explicada (<=1; 0 = no mejor
+      que predecir la media; negativo = peor que la media).
+    - valid_corr : correlación de Pearson pred vs. real.
+    """
+    preds = pipeline.predict(X_va)
+    rmse = float(np.sqrt(mean_squared_error(y_va, preds)))
+    mae = float(mean_absolute_error(y_va, preds))
+    r2 = float(r2_score(y_va, preds))
+    corr = float(np.corrcoef(preds, y_va)[0, 1]) if len(y_va) > 1 else float("nan")
+    return {
+        "model": model_name,
+        "target": target,
+        "valid_rmse": rmse,
+        "valid_mae": mae,
+        "valid_r2": r2,
+        "valid_corr": corr,
+        "n_valid": int(len(y_va)),
+    }
 
 
 def train(
     X: pd.DataFrame,
     y: pd.DataFrame,
+    model_name: str = "hist_gradient_boosting",
     valid_fraction: float = 0.2,
-    **pipeline_kwargs,
+    target: str | None = None,
 ) -> tuple[Pipeline, dict]:
-    """Entrena el Pipeline con un split temporal (sin barajar).
+    """Entrena UN algoritmo para `target` con split temporal (sin barajar)."""
+    target = target or config.TARGET
+    X_tr, X_va, y_tr, y_va = _split_xy(X, y, target, valid_fraction)
 
-    Los NaN en los targets (instrumentos sin cotización) se imputan a 0
-    sólo para el ajuste; en la práctica conviene una máscara por target.
-    """
-    feats = _feature_cols(X)
-    Xv = X[feats].to_numpy()
-    yv = y[config.TARGET_COLS].to_numpy()
-
-    n = len(Xv)
-    cut = int(n * (1 - valid_fraction))
-    X_tr, X_va = Xv[:cut], Xv[cut:]
-    y_tr, y_va = yv[:cut], yv[cut:]
-
-    # Imputación simple de NaN en targets para poder ajustar
-    y_tr = np.nan_to_num(y_tr, nan=0.0)
-
-    logger.info("Entrenando: train=%s valid=%s targets=%s", X_tr.shape, X_va.shape, yv.shape[1])
-    pipeline = build_pipeline(**pipeline_kwargs)
+    logger.info(
+        "Entrenando %s | target=%s (%s): train=%s valid=%s",
+        model_name, target, config.TARGET_DEFINITION, X_tr.shape, X_va.shape,
+    )
+    pipeline = build_pipeline(model_name)
     pipeline.fit(X_tr, y_tr)
 
-    preds = pipeline.predict(X_va)
-    metrics = {"valid_rmse": float(_masked_rmse(y_va, preds))}
+    metrics = _evaluate(pipeline, X_va, y_va, model_name, target)
     logger.info("Validación: %s", metrics)
     return pipeline, metrics
 
 
-def _masked_rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    mask = ~np.isnan(y_true)
-    if mask.sum() == 0:
-        return float("nan")
-    diff = (y_pred[mask] - y_true[mask]) ** 2
-    return float(np.sqrt(diff.mean()))
+def benchmark(
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    model_names: list[str] | None = None,
+    valid_fraction: float = 0.2,
+    target: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, Pipeline]]:
+    """Entrena y compara todos los algoritmos sobre el mismo split.
+
+    Returns
+    -------
+    results : DataFrame ordenado por valid_rmse (mejor primero).
+    pipelines : dict {model_name: pipeline entrenado}.
+    """
+    target = target or config.TARGET
+    model_names = model_names or MODEL_NAMES
+
+    rows, pipelines = [], {}
+    for name in model_names:
+        pipe, metrics = train(X, y, model_name=name, valid_fraction=valid_fraction, target=target)
+        rows.append(metrics)
+        pipelines[name] = pipe
+
+    results = pd.DataFrame(rows).sort_values("valid_rmse").reset_index(drop=True)
+    logger.info("Benchmark (mejor por valid_rmse):\n%s", results.to_string(index=False))
+    return results, pipelines
 
 
 def save_model(pipeline: Pipeline, path: Path | None = None) -> Path:
@@ -116,5 +183,6 @@ if __name__ == "__main__":
 
     features, labels, _ = load_raw()
     X = preprocess(features)
-    pipeline, _ = train(X, labels)
-    save_model(pipeline)
+    results, pipelines = benchmark(X, labels)
+    best = results.iloc[0]["model"]
+    save_model(pipelines[best])

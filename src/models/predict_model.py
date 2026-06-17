@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Inferencia / predicción para el reto MITSUI Commodity Prediction.
 
+Problema simplificado: un único target (`config.TARGET`).
+
 Función reutilizable:
-    predict(model, X) -> DataFrame con date_id + target_0..target_423
+    predict(model, X) -> DataFrame con date_id + <config.TARGET>
 """
 from __future__ import annotations
 
@@ -23,15 +25,15 @@ def load_model(path: Path | None = None):
     return joblib.load(path)
 
 
-def predict(model, X: pd.DataFrame) -> pd.DataFrame:
-    """Genera predicciones para todos los targets.
+def predict(model, X: pd.DataFrame, target: str | None = None) -> pd.DataFrame:
+    """Genera predicciones para el target único.
 
-    Returns un DataFrame con `date_id` + las 424 columnas de target.
+    Returns un DataFrame con `date_id` + la columna `<config.TARGET>`.
     """
+    target = target or config.TARGET
     feats = [c for c in X.columns if c != config.ID_COL]
     preds = model.predict(X[feats].to_numpy())
-    out = pd.DataFrame(preds, columns=config.TARGET_COLS)
-    out.insert(0, config.ID_COL, X[config.ID_COL].to_numpy())
+    out = pd.DataFrame({config.ID_COL: X[config.ID_COL].to_numpy(), target: preds})
     return out
 
 
