@@ -23,7 +23,13 @@ import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
 from src.data.make_dataset import build_dataset  # noqa: E402
-from src.models.train_model import MODEL_NAMES, benchmark, save_model, train  # noqa: E402
+from src.models.train_model import (  # noqa: E402
+    MODEL_NAMES,
+    benchmark,
+    cross_validate_model,
+    fit_full,
+    save_model,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,10 +47,10 @@ def parse_args() -> argparse.Namespace:
         help="Ruta de salida del modelo entrenado (.pkl)",
     )
     parser.add_argument(
-        "--valid-fraction",
-        type=float,
-        default=0.2,
-        help="Fracción final de la serie usada como validación temporal",
+        "--n-splits",
+        type=int,
+        default=5,
+        help="Nº de folds para la validación cruzada temporal (TimeSeriesSplit)",
     )
     return parser.parse_args()
 
@@ -63,16 +69,22 @@ def main() -> None:
     y = pd.read_parquet(y_path)
 
     if args.model == "all":
-        results, pipelines = benchmark(X, y, valid_fraction=args.valid_fraction)
+        results, pipelines = benchmark(X, y, n_splits=args.n_splits)
         best = results.iloc[0]["model"]
         save_model(pipelines[best], args.model_out)
-        print("\n=== Benchmark (target:", config.TARGET, "-", config.TARGET_DEFINITION, ") ===")
+        print("\n=== Benchmark CV temporal (target:", config.TARGET,
+              "-", config.TARGET_DEFINITION, f"| {args.n_splits} folds) ===")
         print(results.to_string(index=False))
         print(f"\nMejor modelo: {best}  ->  {args.model_out}")
     else:
-        model, metrics = train(X, y, model_name=args.model, valid_fraction=args.valid_fraction)
+        agg, folds = cross_validate_model(X, y, model_name=args.model, n_splits=args.n_splits)
+        model = fit_full(X, y, model_name=args.model)
         save_model(model, args.model_out)
-        print(f"OK  {args.model} -> {args.model_out}  | métricas: {metrics}")
+        print(f"\n=== CV temporal: {args.model} ({args.n_splits} folds) ===")
+        print(folds.to_string(index=False))
+        print(f"\nrmse_mean={agg['rmse_mean']:.5f}±{agg['rmse_std']:.5f}  "
+              f"r2_mean={agg['r2_mean']:.4f}  corr_mean={agg['corr_mean']:.4f}")
+        print(f"Modelo final (todos los datos) -> {args.model_out}")
 
 
 if __name__ == "__main__":
