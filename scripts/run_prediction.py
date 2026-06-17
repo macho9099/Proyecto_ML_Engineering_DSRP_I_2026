@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src import config  # noqa: E402
-from src.data.make_dataset import load_test, preprocess  # noqa: E402
+from src.data.make_dataset import load_test, prepare_features  # noqa: E402
 from src.models.predict_model import load_model, predict, save_predictions  # noqa: E402
 
 
@@ -46,7 +46,7 @@ def main() -> None:
 
     model = load_model(args.model)
     test = load_test().drop(columns=["is_scored"], errors="ignore")
-    test = preprocess(test)
+    test = prepare_features(test)
     preds = predict(model, test)
     save_predictions(preds, args.output)
     print(f"OK  predicciones -> {args.output}  | shape={preds.shape}")

@@ -47,9 +47,9 @@ def save_predictions(preds: pd.DataFrame, path: Path | None = None) -> Path:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    from src.data.make_dataset import load_test, preprocess
+    from src.data.make_dataset import load_test, prepare_features
 
     model = load_model()
-    test = preprocess(load_test().drop(columns=["is_scored"], errors="ignore"))
+    test = prepare_features(load_test().drop(columns=["is_scored"], errors="ignore"))
     preds = predict(model, test)
     save_predictions(preds)

@@ -60,6 +60,11 @@ TARGET = "target_4"
 TARGET_DEFINITION = "LME_AH_Close - JPX_Gold_Standard_Futures_Close"
 TARGET_LAG = 1
 
+# Instrumentos que definen el spread del target (para feature engineering)
+SPREAD_LEFT = "LME_AH_Close"
+SPREAD_RIGHT = "JPX_Gold_Standard_Futures_Close"
+KEY_INSTRUMENTS = [SPREAD_LEFT, SPREAD_RIGHT]
+
 
 def ensure_output_dirs() -> None:
     """Crea los directorios de salida si no existen."""
