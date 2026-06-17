@@ -35,6 +35,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.feature_selection import RFE
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -72,12 +73,28 @@ def _make_estimator(model_name: str):
     raise ValueError(f"Modelo desconocido: {model_name!r}. Opciones: {MODEL_NAMES}")
 
 
-def build_pipeline(model_name: str = "hist_gradient_boosting") -> Pipeline:
-    """Construye el Pipeline para `model_name` (imputer [+ scaler] -> modelo)."""
+def build_pipeline(
+    model_name: str = "hist_gradient_boosting",
+    select_k: int | None = None,
+    rfe_step: float = 0.1,
+) -> Pipeline:
+    """Construye el Pipeline para `model_name`.
+
+    Pasos: imputer [-> scaler] [-> rfe] -> modelo.
+
+    Si `select_k` no es None, se inserta **RFE** (Recursive Feature Elimination)
+    para quedarse con `select_k` features. RFE usa un ranker basado en
+    importancias (DecisionTree) porque HistGradientBoosting no expone
+    `feature_importances_`; `rfe_step` es la fracción de features eliminada en
+    cada iteración (0.1 = 10%, más rápido que eliminar de a una).
+    """
     estimator, needs_scaling = _make_estimator(model_name)
     steps = [("imputer", SimpleImputer(strategy="median"))]
     if needs_scaling:
         steps.append(("scaler", StandardScaler()))
+    if select_k is not None:
+        ranker = DecisionTreeRegressor(max_depth=8, random_state=0)
+        steps.append(("rfe", RFE(estimator=ranker, n_features_to_select=select_k, step=rfe_step)))
     steps.append(("model", estimator))
     return Pipeline(steps)
 
@@ -105,13 +122,14 @@ def train(
     model_name: str = "hist_gradient_boosting",
     valid_fraction: float = 0.2,
     target: str | None = None,
+    select_k: int | None = None,
 ) -> tuple[Pipeline, dict]:
     """Entrena UN algoritmo con un corte temporal único (rápido, para uso ágil)."""
     target = target or config.TARGET
     Xv, yv = _clean_xy(X, y, target)
     cut = int(len(Xv) * (1 - valid_fraction))
 
-    pipeline = build_pipeline(model_name)
+    pipeline = build_pipeline(model_name, select_k=select_k)
     pipeline.fit(Xv[:cut], yv[:cut])
     m = _metrics(yv[cut:], pipeline.predict(Xv[cut:]))
     metrics = {"model": model_name, "target": target, "valid_rmse": m["rmse"], **m}
@@ -125,6 +143,7 @@ def cross_validate_model(
     model_name: str = "hist_gradient_boosting",
     n_splits: int = N_SPLITS,
     target: str | None = None,
+    select_k: int | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """Validación cruzada temporal de UN algoritmo.
 
@@ -139,7 +158,7 @@ def cross_validate_model(
 
     rows = []
     for k, (tr_idx, te_idx) in enumerate(tscv.split(Xv), start=1):
-        pipe = build_pipeline(model_name)
+        pipe = build_pipeline(model_name, select_k=select_k)
         pipe.fit(Xv[tr_idx], yv[tr_idx])
         m = _metrics(yv[te_idx], pipe.predict(Xv[te_idx]))
         m.update({"fold": k, "n_train": len(tr_idx), "n_valid": len(te_idx)})
@@ -160,11 +179,12 @@ def fit_full(
     y: pd.DataFrame,
     model_name: str = "hist_gradient_boosting",
     target: str | None = None,
+    select_k: int | None = None,
 ) -> Pipeline:
     """Ajusta el pipeline con TODOS los datos limpios (modelo final a guardar)."""
     target = target or config.TARGET
     Xv, yv = _clean_xy(X, y, target)
-    pipeline = build_pipeline(model_name)
+    pipeline = build_pipeline(model_name, select_k=select_k)
     pipeline.fit(Xv, yv)
     return pipeline
 
@@ -175,11 +195,13 @@ def benchmark(
     model_names: list[str] | None = None,
     n_splits: int = N_SPLITS,
     target: str | None = None,
+    select_k: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Pipeline]]:
     """Compara todos los algoritmos por validación cruzada temporal.
 
     Para cada modelo: evalúa por CV (media±std) y ajusta el pipeline final con
-    todos los datos.
+    todos los datos. Si `select_k` no es None, todos usan RFE para quedarse con
+    `select_k` features.
 
     Returns
     -------
@@ -191,9 +213,11 @@ def benchmark(
 
     rows, pipelines = [], {}
     for name in model_names:
-        agg, _ = cross_validate_model(X, y, model_name=name, n_splits=n_splits, target=target)
+        agg, _ = cross_validate_model(
+            X, y, model_name=name, n_splits=n_splits, target=target, select_k=select_k
+        )
         rows.append(agg)
-        pipelines[name] = fit_full(X, y, model_name=name, target=target)
+        pipelines[name] = fit_full(X, y, model_name=name, target=target, select_k=select_k)
 
     cols = ["model", "n_splits", "rmse_mean", "rmse_std", "mae_mean",
             "r2_mean", "r2_std", "corr_mean", "corr_std"]

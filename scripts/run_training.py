@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Nº de folds para la validación cruzada temporal (TimeSeriesSplit)",
     )
+    parser.add_argument(
+        "--select-k",
+        type=int,
+        default=None,
+        help="Si se indica, aplica RFE para seleccionar K features (p. ej. 50)",
+    )
     return parser.parse_args()
 
 
@@ -68,17 +74,20 @@ def main() -> None:
     X = pd.read_parquet(x_path)
     y = pd.read_parquet(y_path)
 
+    sel = f"RFE(k={args.select_k})" if args.select_k else "sin selección"
     if args.model == "all":
-        results, pipelines = benchmark(X, y, n_splits=args.n_splits)
+        results, pipelines = benchmark(X, y, n_splits=args.n_splits, select_k=args.select_k)
         best = results.iloc[0]["model"]
         save_model(pipelines[best], args.model_out)
         print("\n=== Benchmark CV temporal (target:", config.TARGET,
-              "-", config.TARGET_DEFINITION, f"| {args.n_splits} folds) ===")
+              "-", config.TARGET_DEFINITION, f"| {args.n_splits} folds | {sel}) ===")
         print(results.to_string(index=False))
         print(f"\nMejor modelo: {best}  ->  {args.model_out}")
     else:
-        agg, folds = cross_validate_model(X, y, model_name=args.model, n_splits=args.n_splits)
-        model = fit_full(X, y, model_name=args.model)
+        agg, folds = cross_validate_model(
+            X, y, model_name=args.model, n_splits=args.n_splits, select_k=args.select_k
+        )
+        model = fit_full(X, y, model_name=args.model, select_k=args.select_k)
         save_model(model, args.model_out)
         print(f"\n=== CV temporal: {args.model} ({args.n_splits} folds) ===")
         print(folds.to_string(index=False))
