@@ -7,10 +7,12 @@ tiempo financieras:
     config.TARGET = "target_4"
         = "LME_AH_Close - JPX_Gold_Standard_Futures_Close" (lag 1)
 
-Cada algoritmo se encapsula en un **scikit-learn Pipeline** que une el
-preprocesamiento numérico (imputación y, cuando aplica, escalado) con el
-estimador, de modo que las mismas transformaciones se apliquen en
-entrenamiento e inferencia.
+Cada algoritmo se encapsula en un **scikit-learn Pipeline** (imputación +,
+cuando aplica, escalado + estimador).
+
+La evaluación usa **validación cruzada temporal** (`TimeSeriesSplit`): varios
+folds donde cada uno entrena con el pasado y valida con el futuro inmediato.
+Se reporta media ± desviación de cada métrica, más estable que un corte único.
 
 Algoritmos del benchmark (ver MODEL_NAMES):
     - linear_regression       -> LinearRegression       (con StandardScaler)
@@ -18,9 +20,11 @@ Algoritmos del benchmark (ver MODEL_NAMES):
     - hist_gradient_boosting  -> HistGradientBoostingRegressor
 
 Funciones reutilizables:
-    build_pipeline(model_name) -> Pipeline
-    train(X, y, model_name)    -> pipeline entrenado + métricas
-    benchmark(X, y)            -> compara todos los modelos
+    build_pipeline(model_name)        -> Pipeline
+    train(X, y, model_name)           -> pipeline (split único) + métricas
+    cross_validate_model(X, y, name)  -> métricas agregadas por CV temporal
+    fit_full(X, y, model_name)        -> pipeline ajustado con todos los datos
+    benchmark(X, y)                   -> compara todos los modelos por CV
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor
@@ -44,6 +49,9 @@ logger = logging.getLogger(__name__)
 
 # Algoritmos disponibles en el benchmark
 MODEL_NAMES = ["linear_regression", "decision_tree", "hist_gradient_boosting"]
+
+# Nº de folds por defecto para la validación cruzada temporal
+N_SPLITS = 5
 
 
 def _feature_cols(X: pd.DataFrame) -> list[str]:
@@ -65,13 +73,7 @@ def _make_estimator(model_name: str):
 
 
 def build_pipeline(model_name: str = "hist_gradient_boosting") -> Pipeline:
-    """Construye el Pipeline para `model_name`.
-
-    Pasos:
-      1. ``imputer`` -> SimpleImputer(median): red de seguridad para NaN.
-      2. ``scaler``  -> StandardScaler: SOLO para modelos lineales.
-      3. ``model``   -> el estimador del algoritmo elegido.
-    """
+    """Construye el Pipeline para `model_name` (imputer [+ scaler] -> modelo)."""
     estimator, needs_scaling = _make_estimator(model_name)
     steps = [("imputer", SimpleImputer(strategy="median"))]
     if needs_scaling:
@@ -80,42 +82,21 @@ def build_pipeline(model_name: str = "hist_gradient_boosting") -> Pipeline:
     return Pipeline(steps)
 
 
-def _split_xy(X: pd.DataFrame, y: pd.DataFrame, target: str, valid_fraction: float):
-    """Alinea X/y, descarta filas con target NaN y hace el split temporal."""
+def _clean_xy(X: pd.DataFrame, y: pd.DataFrame, target: str):
+    """Matriz de features y vector target alineados, sin filas con target NaN."""
     feats = _feature_cols(X)
     target_series = y[target]
-    valid_mask = target_series.notna().to_numpy()
-    Xv = X[feats].to_numpy()[valid_mask]
-    yv = target_series.to_numpy()[valid_mask]
-
-    n = len(Xv)
-    cut = int(n * (1 - valid_fraction))
-    return Xv[:cut], Xv[cut:], yv[:cut], yv[cut:]
+    mask = target_series.notna().to_numpy()
+    return X[feats].to_numpy()[mask], target_series.to_numpy()[mask]
 
 
-def _evaluate(pipeline: Pipeline, X_va, y_va, model_name: str, target: str) -> dict:
-    """Métricas de capacidad predictiva sobre el conjunto de validación.
-
-    - valid_rmse : raíz del error cuadrático medio (métrica principal).
-    - valid_mae  : error absoluto medio (robusto a outliers).
-    - valid_r2   : R^2, proporción de varianza explicada (<=1; 0 = no mejor
-      que predecir la media; negativo = peor que la media).
-    - valid_corr : correlación de Pearson pred vs. real.
-    """
-    preds = pipeline.predict(X_va)
-    rmse = float(np.sqrt(mean_squared_error(y_va, preds)))
-    mae = float(mean_absolute_error(y_va, preds))
-    r2 = float(r2_score(y_va, preds))
-    corr = float(np.corrcoef(preds, y_va)[0, 1]) if len(y_va) > 1 else float("nan")
-    return {
-        "model": model_name,
-        "target": target,
-        "valid_rmse": rmse,
-        "valid_mae": mae,
-        "valid_r2": r2,
-        "valid_corr": corr,
-        "n_valid": int(len(y_va)),
-    }
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Métricas de capacidad predictiva (RMSE principal, + MAE, R^2, corr)."""
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    mae = float(mean_absolute_error(y_true, y_pred))
+    r2 = float(r2_score(y_true, y_pred))
+    corr = float(np.corrcoef(y_pred, y_true)[0, 1]) if len(y_true) > 1 else float("nan")
+    return {"rmse": rmse, "mae": mae, "r2": r2, "corr": corr}
 
 
 def train(
@@ -125,47 +106,99 @@ def train(
     valid_fraction: float = 0.2,
     target: str | None = None,
 ) -> tuple[Pipeline, dict]:
-    """Entrena UN algoritmo para `target` con split temporal (sin barajar)."""
+    """Entrena UN algoritmo con un corte temporal único (rápido, para uso ágil)."""
     target = target or config.TARGET
-    X_tr, X_va, y_tr, y_va = _split_xy(X, y, target, valid_fraction)
+    Xv, yv = _clean_xy(X, y, target)
+    cut = int(len(Xv) * (1 - valid_fraction))
 
-    logger.info(
-        "Entrenando %s | target=%s (%s): train=%s valid=%s",
-        model_name, target, config.TARGET_DEFINITION, X_tr.shape, X_va.shape,
-    )
     pipeline = build_pipeline(model_name)
-    pipeline.fit(X_tr, y_tr)
-
-    metrics = _evaluate(pipeline, X_va, y_va, model_name, target)
-    logger.info("Validación: %s", metrics)
+    pipeline.fit(Xv[:cut], yv[:cut])
+    m = _metrics(yv[cut:], pipeline.predict(Xv[cut:]))
+    metrics = {"model": model_name, "target": target, "valid_rmse": m["rmse"], **m}
+    logger.info("train(%s) split único: %s", model_name, metrics)
     return pipeline, metrics
+
+
+def cross_validate_model(
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    model_name: str = "hist_gradient_boosting",
+    n_splits: int = N_SPLITS,
+    target: str | None = None,
+) -> tuple[dict, pd.DataFrame]:
+    """Validación cruzada temporal de UN algoritmo.
+
+    Returns
+    -------
+    agg : dict con media y desviación de cada métrica entre folds.
+    folds : DataFrame con las métricas de cada fold.
+    """
+    target = target or config.TARGET
+    Xv, yv = _clean_xy(X, y, target)
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    rows = []
+    for k, (tr_idx, te_idx) in enumerate(tscv.split(Xv), start=1):
+        pipe = build_pipeline(model_name)
+        pipe.fit(Xv[tr_idx], yv[tr_idx])
+        m = _metrics(yv[te_idx], pipe.predict(Xv[te_idx]))
+        m.update({"fold": k, "n_train": len(tr_idx), "n_valid": len(te_idx)})
+        rows.append(m)
+
+    folds = pd.DataFrame(rows)
+    agg = {"model": model_name, "target": target, "n_splits": n_splits}
+    for metric in ("rmse", "mae", "r2", "corr"):
+        agg[f"{metric}_mean"] = float(folds[metric].mean())
+        agg[f"{metric}_std"] = float(folds[metric].std())
+    logger.info("CV(%s): rmse=%.5f±%.5f r2=%.4f corr=%.4f",
+                model_name, agg["rmse_mean"], agg["rmse_std"], agg["r2_mean"], agg["corr_mean"])
+    return agg, folds
+
+
+def fit_full(
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    model_name: str = "hist_gradient_boosting",
+    target: str | None = None,
+) -> Pipeline:
+    """Ajusta el pipeline con TODOS los datos limpios (modelo final a guardar)."""
+    target = target or config.TARGET
+    Xv, yv = _clean_xy(X, y, target)
+    pipeline = build_pipeline(model_name)
+    pipeline.fit(Xv, yv)
+    return pipeline
 
 
 def benchmark(
     X: pd.DataFrame,
     y: pd.DataFrame,
     model_names: list[str] | None = None,
-    valid_fraction: float = 0.2,
+    n_splits: int = N_SPLITS,
     target: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Pipeline]]:
-    """Entrena y compara todos los algoritmos sobre el mismo split.
+    """Compara todos los algoritmos por validación cruzada temporal.
+
+    Para cada modelo: evalúa por CV (media±std) y ajusta el pipeline final con
+    todos los datos.
 
     Returns
     -------
-    results : DataFrame ordenado por valid_rmse (mejor primero).
-    pipelines : dict {model_name: pipeline entrenado}.
+    results : DataFrame ordenado por rmse_mean (mejor primero).
+    pipelines : dict {model_name: pipeline ajustado con todos los datos}.
     """
     target = target or config.TARGET
     model_names = model_names or MODEL_NAMES
 
     rows, pipelines = [], {}
     for name in model_names:
-        pipe, metrics = train(X, y, model_name=name, valid_fraction=valid_fraction, target=target)
-        rows.append(metrics)
-        pipelines[name] = pipe
+        agg, _ = cross_validate_model(X, y, model_name=name, n_splits=n_splits, target=target)
+        rows.append(agg)
+        pipelines[name] = fit_full(X, y, model_name=name, target=target)
 
-    results = pd.DataFrame(rows).sort_values("valid_rmse").reset_index(drop=True)
-    logger.info("Benchmark (mejor por valid_rmse):\n%s", results.to_string(index=False))
+    cols = ["model", "n_splits", "rmse_mean", "rmse_std", "mae_mean",
+            "r2_mean", "r2_std", "corr_mean", "corr_std"]
+    results = pd.DataFrame(rows)[cols].sort_values("rmse_mean").reset_index(drop=True)
+    logger.info("Benchmark CV temporal (mejor por rmse_mean):\n%s", results.to_string(index=False))
     return results, pipelines
 
 
@@ -179,10 +212,10 @@ def save_model(pipeline: Pipeline, path: Path | None = None) -> Path:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    from src.data.make_dataset import load_raw, preprocess
+    from src.data.make_dataset import load_raw, prepare_features
 
     features, labels, _ = load_raw()
-    X = preprocess(features)
+    X = prepare_features(features)
     results, pipelines = benchmark(X, labels)
     best = results.iloc[0]["model"]
     save_model(pipelines[best])
