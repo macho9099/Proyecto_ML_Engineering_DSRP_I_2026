@@ -220,3 +220,4 @@ __marimo__/
 # MLflow local tracking
 mlruns/
 mlartifacts/
+mlflow.db
