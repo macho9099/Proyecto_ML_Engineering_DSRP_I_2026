@@ -65,6 +65,16 @@ SPREAD_LEFT = "LME_AH_Close"
 SPREAD_RIGHT = "JPX_Gold_Standard_Futures_Close"
 KEY_INSTRUMENTS = [SPREAD_LEFT, SPREAD_RIGHT]
 
+# --- MLflow (administración de experimentos y modelos) ------------------------
+# Con MLFLOW_TRACKING_URI vacío se trackea localmente en <root>/mlruns.
+# Para DagsHub, definir en .env:
+#   MLFLOW_TRACKING_URI=https://dagshub.com/<usuario>/<repo>.mlflow
+#   MLFLOW_TRACKING_USERNAME=<usuario>
+#   MLFLOW_TRACKING_PASSWORD=<token>
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "")
+MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "mitsui-target4")
+REGISTERED_MODEL_NAME = os.getenv("MLFLOW_REGISTERED_MODEL", "mitsui-target4-regressor")
+
 
 def ensure_output_dirs() -> None:
     """Crea los directorios de salida si no existen."""
