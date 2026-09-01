@@ -228,7 +228,7 @@ def benchmark(
         )
         pipelines[name] = fit_full(X, y, model_name=name, target=target, select_k=select_k)
         if log_experiments:
-            agg["mlflow_run_id"] = tracking.log_cv_run(
+            agg["mlflow_run_id"], agg["mlflow_model_uri"] = tracking.log_cv_run(
                 name,
                 pipelines[name],
                 agg,
@@ -247,7 +247,7 @@ def benchmark(
     cols = ["model", "n_splits", "rmse_mean", "rmse_std", "mae_mean",
             "r2_mean", "r2_std", "corr_mean", "corr_std"]
     if log_experiments:
-        cols.append("mlflow_run_id")
+        cols += ["mlflow_run_id", "mlflow_model_uri"]
     results = pd.DataFrame(rows)[cols].sort_values("rmse_mean").reset_index(drop=True)
     logger.info("Benchmark CV temporal (mejor por rmse_mean):\n%s", results.to_string(index=False))
     return results, pipelines

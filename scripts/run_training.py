@@ -103,10 +103,10 @@ def main() -> None:
         save_model(pipelines[best], args.model_out)
         print("\n=== Benchmark CV temporal (target:", config.TARGET,
               "-", config.TARGET_DEFINITION, f"| {args.n_splits} folds | {sel}) ===")
-        print(results.to_string(index=False))
+        print(results.drop(columns=["mlflow_model_uri"], errors="ignore").to_string(index=False))
         print(f"\nMejor modelo: {best}  ->  {args.model_out}")
         if use_mlflow and args.register:
-            version = tracking.register_model(results.iloc[0]["mlflow_run_id"])
+            version = tracking.register_model(results.iloc[0]["mlflow_model_uri"])
             print(f"Registrado en MLflow: {config.REGISTERED_MODEL_NAME} "
                   f"v{version.version} (alias 'production')")
     else:
@@ -117,7 +117,7 @@ def main() -> None:
         save_model(model, args.model_out)
         if use_mlflow:
             tracking.setup_mlflow()
-            run_id = tracking.log_cv_run(
+            _run_id, model_uri = tracking.log_cv_run(
                 args.model, model, agg, folds,
                 extra_params={
                     "target": config.TARGET,
@@ -126,7 +126,7 @@ def main() -> None:
                 },
             )
             if args.register:
-                version = tracking.register_model(run_id)
+                version = tracking.register_model(model_uri)
                 print(f"Registrado en MLflow: {config.REGISTERED_MODEL_NAME} "
                       f"v{version.version} (alias 'production')")
         print(f"\n=== CV temporal: {args.model} ({args.n_splits} folds) ===")

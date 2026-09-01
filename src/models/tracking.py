@@ -76,7 +76,9 @@ def log_cv_run(
 
     Returns
     -------
-    run_id : identificador del run (sirve para registrar el modelo después).
+    run_id : identificador del run.
+    model_uri : URI ``models:/...`` del modelo loggeado (para registrarlo
+        después en el Model Registry).
     """
     with mlflow.start_run(run_name=model_name) as run:
         params = {"model_name": model_name, **_pipeline_params(pipeline)}
@@ -107,7 +109,7 @@ def log_cv_run(
             except Exception as exc:  # el gráfico no debe tumbar el run
                 logger.warning("No se pudo generar el gráfico de folds: %s", exc)
 
-        mlflow.sklearn.log_model(
+        model_info = mlflow.sklearn.log_model(
             pipeline,
             name="model",
             input_example=input_example,
@@ -116,16 +118,17 @@ def log_cv_run(
 
         run_id = run.info.run_id
     logger.info("Run MLflow registrado: %s (%s)", model_name, run_id)
-    return run_id
+    return run_id, model_info.model_uri
 
 
-def register_model(run_id: str, alias: str = "production"):
-    """Registra el modelo de un run en el Model Registry y le asigna un alias.
+def register_model(model_uri: str, alias: str = "production"):
+    """Registra un modelo loggeado en el Model Registry y le asigna un alias.
 
-    El alias ``production`` marca la versión productiva del modelo
+    `model_uri` es la URI ``models:/...`` devuelta por `log_cv_run` (la forma
+    ``runs:/<run_id>/model`` no resuelve en todos los servidores, p. ej.
+    DagsHub). El alias ``production`` marca la versión productiva del modelo
     ``config.REGISTERED_MODEL_NAME``.
     """
-    model_uri = f"runs:/{run_id}/model"
     version = mlflow.register_model(model_uri, config.REGISTERED_MODEL_NAME)
     try:
         client = mlflow.MlflowClient()
