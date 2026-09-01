@@ -329,3 +329,26 @@ python scripts/run_prediction.py
 │   └── models/{train_model.py, predict_model.py}
 └── scripts/              # run_preprocessing / run_training / run_prediction
 ```
+
+---
+
+## Estrategia de Git
+
+El proyecto sigue **GitHub Flow** con dos ramas permanentes y ramas de trabajo
+efímeras:
+
+- **`main`**: rama estable. Solo recibe cambios mediante *pull requests* desde
+  `development`. Cada entrega del curso se marca aquí con un *tag* y un
+  *release* con notas (`v1.0.0` = Curso I, `v2.0.0` = Curso II).
+- **`development`**: rama de integración. Acumula el trabajo en curso antes de
+  promoverse a `main`.
+- **`feature/*`**: ramas cortas por tarea (p. ej. `feature/repo-cleanup`,
+  `feature/mlflow-tracking`). Se fusionan a `development` vía *pull request*
+  documentada describiendo el cambio y su motivación.
+
+Convenciones:
+
+- *Merges* con *merge commit* (no *squash*) para conservar la historia de cada PR.
+- Versionado semántico en los releases (`MAJOR.MINOR.PATCH`).
+- `.gitignore` excluye entornos, cachés y datos crudos; las carpetas
+  provisionales se preservan con `.gitkeep`.
