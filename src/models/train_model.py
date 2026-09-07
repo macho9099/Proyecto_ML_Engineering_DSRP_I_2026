@@ -16,8 +16,11 @@ Se reporta media ± desviación de cada métrica, más estable que un corte úni
 
 Algoritmos del benchmark (ver MODEL_NAMES):
     - linear_regression       -> LinearRegression       (con StandardScaler)
+    - elastic_net             -> ElasticNet             (con StandardScaler)
     - decision_tree           -> DecisionTreeRegressor
+    - random_forest           -> RandomForestRegressor
     - hist_gradient_boosting  -> HistGradientBoostingRegressor
+    - lightgbm                -> LGBMRegressor
 
 Funciones reutilizables:
     build_pipeline(model_name)        -> Pipeline
@@ -34,10 +37,11 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
+from lightgbm import LGBMRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import RFE
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import ElasticNet, LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
@@ -45,11 +49,19 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
 from src import config
+from src.models import tracking
 
 logger = logging.getLogger(__name__)
 
 # Algoritmos disponibles en el benchmark
-MODEL_NAMES = ["linear_regression", "decision_tree", "hist_gradient_boosting"]
+MODEL_NAMES = [
+    "linear_regression",
+    "elastic_net",
+    "decision_tree",
+    "random_forest",
+    "hist_gradient_boosting",
+    "lightgbm",
+]
 
 # Nº de folds por defecto para la validación cruzada temporal
 N_SPLITS = 5
@@ -63,11 +75,32 @@ def _make_estimator(model_name: str):
     """Devuelve (estimador, needs_scaling) para el algoritmo indicado."""
     if model_name == "linear_regression":
         return LinearRegression(), True
+    if model_name == "elastic_net":
+        return ElasticNet(alpha=0.001, l1_ratio=0.5, max_iter=5000, random_state=0), True
     if model_name == "decision_tree":
         return DecisionTreeRegressor(max_depth=8, random_state=0), False
+    if model_name == "random_forest":
+        return (
+            RandomForestRegressor(
+                n_estimators=300, max_depth=10, n_jobs=-1, random_state=0
+            ),
+            False,
+        )
     if model_name == "hist_gradient_boosting":
         return (
             HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, random_state=0),
+            False,
+        )
+    if model_name == "lightgbm":
+        return (
+            LGBMRegressor(
+                n_estimators=300,
+                learning_rate=0.05,
+                num_leaves=31,
+                random_state=0,
+                n_jobs=-1,
+                verbosity=-1,
+            ),
             False,
         )
     raise ValueError(f"Modelo desconocido: {model_name!r}. Opciones: {MODEL_NAMES}")
@@ -196,12 +229,17 @@ def benchmark(
     n_splits: int = N_SPLITS,
     target: str | None = None,
     select_k: int | None = None,
+    log_experiments: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Pipeline]]:
     """Compara todos los algoritmos por validación cruzada temporal.
 
     Para cada modelo: evalúa por CV (media±std) y ajusta el pipeline final con
     todos los datos. Si `select_k` no es None, todos usan RFE para quedarse con
     `select_k` features.
+
+    Con `log_experiments=True` cada modelo genera un run de MLflow con
+    parámetros, métricas (por fold y agregadas), artefactos y el pipeline
+    final; el id del run queda en la columna `mlflow_run_id` de `results`.
 
     Returns
     -------
@@ -211,16 +249,37 @@ def benchmark(
     target = target or config.TARGET
     model_names = model_names or MODEL_NAMES
 
+    if log_experiments:
+        tracking.setup_mlflow()
+    Xv, _yv = _clean_xy(X, y, target)
+
     rows, pipelines = [], {}
     for name in model_names:
-        agg, _ = cross_validate_model(
+        agg, folds = cross_validate_model(
             X, y, model_name=name, n_splits=n_splits, target=target, select_k=select_k
         )
-        rows.append(agg)
         pipelines[name] = fit_full(X, y, model_name=name, target=target, select_k=select_k)
+        if log_experiments:
+            agg["mlflow_run_id"], agg["mlflow_model_uri"] = tracking.log_cv_run(
+                name,
+                pipelines[name],
+                agg,
+                folds,
+                extra_params={
+                    "target": target,
+                    "n_splits": n_splits,
+                    "select_k": select_k,
+                    "n_features": Xv.shape[1],
+                    "n_samples": Xv.shape[0],
+                },
+                input_example=Xv[:5],
+            )
+        rows.append(agg)
 
     cols = ["model", "n_splits", "rmse_mean", "rmse_std", "mae_mean",
             "r2_mean", "r2_std", "corr_mean", "corr_std"]
+    if log_experiments:
+        cols += ["mlflow_run_id", "mlflow_model_uri"]
     results = pd.DataFrame(rows)[cols].sort_values("rmse_mean").reset_index(drop=True)
     logger.info("Benchmark CV temporal (mejor por rmse_mean):\n%s", results.to_string(index=False))
     return results, pipelines
