@@ -45,6 +45,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
 from src import config
+from src.models import tracking
 
 logger = logging.getLogger(__name__)
 
@@ -196,12 +197,17 @@ def benchmark(
     n_splits: int = N_SPLITS,
     target: str | None = None,
     select_k: int | None = None,
+    log_experiments: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Pipeline]]:
     """Compara todos los algoritmos por validación cruzada temporal.
 
     Para cada modelo: evalúa por CV (media±std) y ajusta el pipeline final con
     todos los datos. Si `select_k` no es None, todos usan RFE para quedarse con
     `select_k` features.
+
+    Con `log_experiments=True` cada modelo genera un run de MLflow con
+    parámetros, métricas (por fold y agregadas), artefactos y el pipeline
+    final; el id del run queda en la columna `mlflow_run_id` de `results`.
 
     Returns
     -------
@@ -211,16 +217,37 @@ def benchmark(
     target = target or config.TARGET
     model_names = model_names or MODEL_NAMES
 
+    if log_experiments:
+        tracking.setup_mlflow()
+    Xv, _yv = _clean_xy(X, y, target)
+
     rows, pipelines = [], {}
     for name in model_names:
-        agg, _ = cross_validate_model(
+        agg, folds = cross_validate_model(
             X, y, model_name=name, n_splits=n_splits, target=target, select_k=select_k
         )
-        rows.append(agg)
         pipelines[name] = fit_full(X, y, model_name=name, target=target, select_k=select_k)
+        if log_experiments:
+            agg["mlflow_run_id"], agg["mlflow_model_uri"] = tracking.log_cv_run(
+                name,
+                pipelines[name],
+                agg,
+                folds,
+                extra_params={
+                    "target": target,
+                    "n_splits": n_splits,
+                    "select_k": select_k,
+                    "n_features": Xv.shape[1],
+                    "n_samples": Xv.shape[0],
+                },
+                input_example=Xv[:5],
+            )
+        rows.append(agg)
 
     cols = ["model", "n_splits", "rmse_mean", "rmse_std", "mae_mean",
             "r2_mean", "r2_std", "corr_mean", "corr_std"]
+    if log_experiments:
+        cols += ["mlflow_run_id", "mlflow_model_uri"]
     results = pd.DataFrame(rows)[cols].sort_values("rmse_mean").reset_index(drop=True)
     logger.info("Benchmark CV temporal (mejor por rmse_mean):\n%s", results.to_string(index=False))
     return results, pipelines

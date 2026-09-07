@@ -4,9 +4,16 @@ Lee X.parquet / y.parquet de data/processed/ (o los genera si faltan),
 hace un benchmark de algoritmos para el target único (config.TARGET) y
 guarda el mejor modelo en artifacts/models/.
 
+Cada algoritmo evaluado genera un run en MLflow (parámetros, métricas por
+fold y agregadas, artefactos y el pipeline final). Con --register, el mejor
+modelo se registra además en el Model Registry con el alias 'production'.
+El destino del tracking se configura en .env (ver src/config.py).
+
 Uso:
     python scripts/run_training.py                       # benchmark de todos
+    python scripts/run_training.py --register            # + Model Registry
     python scripts/run_training.py --model decision_tree # un solo algoritmo
+    python scripts/run_training.py --no-mlflow           # sin tracking
     python scripts/run_training.py --model-out artifacts/models/model.pkl
 """
 from __future__ import annotations
@@ -23,6 +30,7 @@ import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
 from src.data.make_dataset import build_dataset  # noqa: E402
+from src.models import tracking  # noqa: E402
 from src.models.train_model import (  # noqa: E402
     MODEL_NAMES,
     benchmark,
@@ -58,6 +66,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Si se indica, aplica RFE para seleccionar K features (p. ej. 50)",
     )
+    parser.add_argument(
+        "--register",
+        action="store_true",
+        help="Registra el mejor modelo en el Model Registry con alias 'production'",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Desactiva el tracking de experimentos en MLflow",
+    )
     return parser.parse_args()
 
 
@@ -74,21 +92,43 @@ def main() -> None:
     X = pd.read_parquet(x_path)
     y = pd.read_parquet(y_path)
 
+    use_mlflow = not args.no_mlflow
     sel = f"RFE(k={args.select_k})" if args.select_k else "sin selección"
     if args.model == "all":
-        results, pipelines = benchmark(X, y, n_splits=args.n_splits, select_k=args.select_k)
+        results, pipelines = benchmark(
+            X, y, n_splits=args.n_splits, select_k=args.select_k,
+            log_experiments=use_mlflow,
+        )
         best = results.iloc[0]["model"]
         save_model(pipelines[best], args.model_out)
         print("\n=== Benchmark CV temporal (target:", config.TARGET,
               "-", config.TARGET_DEFINITION, f"| {args.n_splits} folds | {sel}) ===")
-        print(results.to_string(index=False))
+        print(results.drop(columns=["mlflow_model_uri"], errors="ignore").to_string(index=False))
         print(f"\nMejor modelo: {best}  ->  {args.model_out}")
+        if use_mlflow and args.register:
+            version = tracking.register_model(results.iloc[0]["mlflow_model_uri"])
+            print(f"Registrado en MLflow: {config.REGISTERED_MODEL_NAME} "
+                  f"v{version.version} (alias 'production')")
     else:
         agg, folds = cross_validate_model(
             X, y, model_name=args.model, n_splits=args.n_splits, select_k=args.select_k
         )
         model = fit_full(X, y, model_name=args.model, select_k=args.select_k)
         save_model(model, args.model_out)
+        if use_mlflow:
+            tracking.setup_mlflow()
+            _run_id, model_uri = tracking.log_cv_run(
+                args.model, model, agg, folds,
+                extra_params={
+                    "target": config.TARGET,
+                    "n_splits": args.n_splits,
+                    "select_k": args.select_k,
+                },
+            )
+            if args.register:
+                version = tracking.register_model(model_uri)
+                print(f"Registrado en MLflow: {config.REGISTERED_MODEL_NAME} "
+                      f"v{version.version} (alias 'production')")
         print(f"\n=== CV temporal: {args.model} ({args.n_splits} folds) ===")
         print(folds.to_string(index=False))
         print(f"\nrmse_mean={agg['rmse_mean']:.5f}±{agg['rmse_std']:.5f}  "
