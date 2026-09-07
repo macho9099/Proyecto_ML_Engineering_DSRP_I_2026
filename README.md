@@ -20,8 +20,9 @@ Modelo de *machine learning* para mercados financieros, basado en el reto de Kag
 5. [Resultados — métricas offline y online](#e-resultados--métricas-offline-y-online)
 6. [Conclusiones](#f-conclusiones)
 7. [MLflow — experimentos y modelo productivo](#mlflow--experimentos-y-modelo-productivo)
-8. [Cómo reproducir](#cómo-reproducir)
-9. [Estrategia de Git](#estrategia-de-git)
+8. [Feature store — Feast](#feature-store--feast)
+9. [Cómo reproducir](#cómo-reproducir)
+10. [Estrategia de Git](#estrategia-de-git)
 
 ---
 
@@ -318,7 +319,9 @@ reporta `media / desviación estándar` a lo largo del tiempo.
    algoritmo del benchmark queda como un run reproducible (parámetros, métricas
    por fold, artefactos y modelo) en DagsHub, y la versión productiva se promueve
    por el Model Registry con el alias `production` — el despliegue deja de
-   depender de un `.pkl` suelto.
+   depender de un `.pkl` suelto. Las features clave además se almacenan y
+   sirven con un **feature store (Feast)**, con retrieval histórico
+   *point-in-time* para entrenar y online para inferencia.
 
 6. **Trabajo futuro:** (i) escalar a los 424 targets multi-objetivo; (ii) validación
    *walk-forward* con re-entrenamiento periódico; (iii) búsqueda de hiperparámetros
@@ -326,8 +329,8 @@ reporta `media / desviación estándar` a lo largo del tiempo.
    con señales exógenas vía **LLMs** (sentimiento de noticias de commodities,
    eventos macro), línea esbozada en el notebook
    `2.0-machine-learning-y-llms.ipynb`; (v) integrar la **API de scoring de
-   Kaggle** para obtener una métrica online real; (vi) servir features con un
-   *feature store* (Feast).
+   Kaggle** para obtener una métrica online real; (vi) extender el feature
+   store a las 608 features y conectarlo al pipeline de inferencia.
 
 ---
 
@@ -358,6 +361,36 @@ La implementación vive en [src/models/tracking.py](src/models/tracking.py); el
 destino del tracking se configura por variables de entorno (ver
 [.env.example](.env.example)) — sin configurar, los runs quedan en `./mlruns`
 local.
+
+---
+
+## Feature store — Feast
+
+Las **51 features clave del target** (derivadas de `LME_AH_Close`,
+`JPX_Gold_Standard_Futures_Close` y el spread) se almacenan y sirven con
+**[Feast](https://feast.dev/)** (Reto ML 2):
+
+| Pieza | Dónde | Qué hace |
+|-------|-------|----------|
+| Definiciones | [feature_store/features.py](feature_store/features.py) | Entidad `market_day` (`date_id`) + feature view `target4_features` (esquema generado dinámicamente desde el parquet fuente) |
+| Config | [feature_store/feature_store.yaml](feature_store/feature_store.yaml) | Provider local: registry y online store en SQLite |
+| Fuente offline | `data/processed/feast_features.parquet` | Generada por [src/features/build_features.py](src/features/build_features.py) (`date_id` + `event_timestamp` sintético + 51 features) |
+| Orquestación | [scripts/run_feature_store.py](scripts/run_feature_store.py) | `build → apply → materialize → train → serve` |
+
+El script demuestra los **dos modos de servir features**:
+
+- **Histórico (offline)** — `get_historical_features` hace el *point-in-time
+  join* contra los targets y construye el dataset de entrenamiento; con él se
+  evalúa el modelo productivo (RandomForest) y el experimento queda registrado
+  en MLflow como `random_forest_feast` (parámetro `feature_source=feast`).
+- **Online** — `materialize_incremental` carga las features al online store
+  (SQLite) y `get_online_features` recupera las del último día de mercado,
+  simulando el *lookup* de baja latencia que haría un servicio de inferencia.
+
+```bash
+python scripts/run_feature_store.py            # flujo completo
+python scripts/run_feature_store.py --skip-train --no-mlflow
+```
 
 ---
 
@@ -399,7 +432,9 @@ python scripts/run_prediction.py
 │   ├── models/{train_model.py, predict_model.py}
 │   ├── models/tracking.py        # MLflow: runs, artefactos y Model Registry
 │   └── visualization/visualize.py  # gráficos (artefactos de MLflow)
+├── feature_store/        # Feast: feature_store.yaml + features.py
 └── scripts/              # run_preprocessing / run_training / run_prediction
+                          # + run_feature_store (Feast)
 ```
 
 ---

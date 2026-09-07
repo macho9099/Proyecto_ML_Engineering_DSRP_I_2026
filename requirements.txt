@@ -13,6 +13,9 @@ python-dotenv==1.2.2
 # administración de experimentos y modelos
 mlflow==3.15.2
 
+# feature store
+feast==0.66.0
+
 # experimentación y notebooks
 jupyter
 matplotlib==3.11.1
