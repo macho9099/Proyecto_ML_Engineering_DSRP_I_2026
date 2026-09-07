@@ -3,8 +3,11 @@
 Modelo de *machine learning* para mercados financieros, basado en el reto de Kaggle
 **[MITSUI & CO. Commodity Prediction Challenge](https://www.kaggle.com/competitions/mitsui-commodity-prediction-challenge)**.
 
-> Proyecto final — *Machine Learning Engineering I*, DataScienceResearchPeru (cohorte 2026).
+> Proyecto final — *Machine Learning Engineering I y II*, DataScienceResearchPeru (cohorte 2026).
 > Estructura generada a partir de [cookiecutter-data-science](https://drivendata.github.io/cookiecutter-data-science/).
+> **v2.0.0**: administración del ciclo de vida del modelo con **MLflow** —
+> experimentos y modelo productivo publicados en
+> **[DagsHub](https://dagshub.com/jcotakushaka/Example)**.
 
 ---
 
@@ -16,7 +19,9 @@ Modelo de *machine learning* para mercados financieros, basado en el reto de Kag
 4. [Model Card](#d-model-card)
 5. [Resultados — métricas offline y online](#e-resultados--métricas-offline-y-online)
 6. [Conclusiones](#f-conclusiones)
-7. [Cómo reproducir](#cómo-reproducir)
+7. [MLflow — experimentos y modelo productivo](#mlflow--experimentos-y-modelo-productivo)
+8. [Cómo reproducir](#cómo-reproducir)
+9. [Estrategia de Git](#estrategia-de-git)
 
 ---
 
@@ -72,7 +77,12 @@ flowchart TD
     subgraph TRAIN["2 · Entrenamiento + Benchmark\nsrc/models/train_model.py"]
         D1[Pipeline sklearn\nimputer → scaler? → RFE? → modelo]
         D2[CV temporal\nTimeSeriesSplit 5 folds]
-        D3[benchmark de 3 algoritmos\nLR · DecisionTree · HistGB]
+        D3[benchmark de 6 algoritmos\nLR · ElasticNet · DT · RF · HistGB · LGBM]
+    end
+
+    subgraph MLF["MLflow (DagsHub)\nsrc/models/tracking.py"]
+        G1[runs por algoritmo\nparámetros · métricas · artefactos]
+        G2[Model Registry\nmitsui-target4-regressor @production]
     end
 
     subgraph ART["artifacts/"]
@@ -90,6 +100,7 @@ flowchart TD
     B1 --> B2 --> B3
     B3 --> C1 & C2
     C1 & C2 --> D1 --> D2 --> D3 --> E1
+    D3 --> G1 --> G2
     A4 --> F1
     E1 --> F1 --> E2
 ```
@@ -170,15 +181,22 @@ por los *rolling*/*lags*), dejando **1892 filas × 608 features**.
 > Formato basado en la guía de [Model Cards de Kaggle](https://www.kaggle.com/code/var0101/model-cards) (Mitchell et al., 2019).
 
 ### Model details
-- **Modelo:** `HistGradientBoostingRegressor` de scikit-learn, encapsulado en un
-  `Pipeline` (`SimpleImputer(median)` → modelo). Hiperparámetros: `max_iter=300`,
-  `learning_rate=0.05`, `random_state=0`.
+- **Modelo (producción, v2):** `RandomForestRegressor` de scikit-learn, encapsulado
+  en un `Pipeline` (`SimpleImputer(median)` → modelo). Hiperparámetros:
+  `n_estimators=300`, `max_depth=10`, `random_state=0`.
+- **Versión anterior (v1):** `HistGradientBoostingRegressor` (`max_iter=300`,
+  `learning_rate=0.05`), campeón del benchmark de 3 algoritmos del Curso I.
 - **Variante alternativa:** mismo pipeline con **RFE** (Recursive Feature Elimination,
   *ranker* = `DecisionTree`) para reducir a *k* features → `model_rfe.pkl`.
-- **Algoritmos comparados:** `LinearRegression` (con `StandardScaler`),
-  `DecisionTreeRegressor(max_depth=8)`, `HistGradientBoostingRegressor`.
-- **Tipo:** regresión sobre series de tiempo. **Versión:** 1.0 (junio 2026).
-- **Código:** [src/models/train_model.py](src/models/train_model.py).
+- **Algoritmos comparados:** `LinearRegression` y `ElasticNet` (con `StandardScaler`),
+  `DecisionTreeRegressor(max_depth=8)`, `RandomForestRegressor`,
+  `HistGradientBoostingRegressor` y `LGBMRegressor` (LightGBM).
+- **Tipo:** regresión sobre series de tiempo. **Versión:** 2.0 (septiembre 2026).
+- **Ciclo de vida:** experimentos y versiones administrados con **MLflow**; la versión
+  productiva vive en el Model Registry como `mitsui-target4-regressor@production`
+  (ver [sección MLflow](#mlflow--experimentos-y-modelo-productivo)).
+- **Código:** [src/models/train_model.py](src/models/train_model.py) y
+  [src/models/tracking.py](src/models/tracking.py).
 
 ### Intended use
 - **Uso previsto:** estimar el retorno a 1 día del spread `LME_AH − JPX_Gold` con fines
@@ -222,30 +240,39 @@ por los *rolling*/*lags*), dejando **1892 filas × 608 features**.
 
 ### Métricas offline (validación cruzada temporal, 5 folds)
 
-Benchmark de los 3 algoritmos sobre `target_4`, ordenado por **RMSE** (menor es mejor):
+Benchmark de los 6 algoritmos sobre `target_4`, ordenado por **RMSE** (menor es
+mejor). Cada fila corresponde a un run en
+[MLflow/DagsHub](https://dagshub.com/jcotakushaka/Example.mlflow):
 
 | Modelo | RMSE (media ± std) | MAE | R² (media) | Corr. (media) |
 |--------|-------------------:|----:|-----------:|--------------:|
-| **HistGradientBoosting** 🏆 | **0.01609 ± 0.00268** | **0.01216** | **−0.161** | **+0.0095** |
+| **RandomForest** 🏆 | **0.01542 ± 0.00306** | **0.01165** | **−0.056** | −0.0222 |
+| HistGradientBoosting | 0.01609 ± 0.00268 | 0.01216 | −0.161 | **+0.0095** |
+| LightGBM | 0.01621 ± 0.00255 | 0.01230 | −0.183 | −0.0068 |
+| ElasticNet | 0.01694 ± 0.00348 | 0.01244 | −0.378 | −0.0055 |
 | DecisionTree | 0.02145 ± 0.00537 | 0.01527 | −1.236 | −0.0123 |
 | LinearRegression | 0.05208 ± 0.03288 | 0.03574 | −18.06 | −0.0122 |
 
-**Detalle por fold del mejor modelo (HistGradientBoosting):**
+**Detalle por fold del mejor modelo (RandomForest):**
 
 | Fold | n_train | n_valid | RMSE | MAE | R² | Corr. |
 |-----:|--------:|--------:|-----:|----:|---:|------:|
-| 1 | 269  | 268 | 0.01383 | 0.01046 | −0.195 | +0.021 |
-| 2 | 537  | 268 | 0.01569 | 0.01196 | −0.284 | +0.005 |
-| 3 | 805  | 268 | 0.02053 | 0.01524 | −0.025 | +0.083 |
-| 4 | 1073 | 268 | 0.01417 | 0.01105 | −0.181 | −0.064 |
-| 5 | 1341 | 268 | 0.01622 | 0.01209 | −0.121 | +0.003 |
+| 1 | 269  | 268 | 0.01320 | 0.00985 | −0.087 | −0.010 |
+| 2 | 537  | 268 | 0.01458 | 0.01086 | −0.110 | +0.028 |
+| 3 | 805  | 268 | 0.02062 | 0.01545 | −0.034 | −0.012 |
+| 4 | 1073 | 268 | 0.01325 | 0.01032 | −0.032 | −0.071 |
+| 5 | 1341 | 268 | 0.01546 | 0.01179 | −0.018 | −0.046 |
 
-**Lectura:** HistGradientBoosting es el más robusto y estable (menor RMSE y menor
-varianza entre folds), y el único con correlación media **positiva** con el retorno
-real. El RMSE bajo (~0.016) es consecuencia de que los retornos diarios son pequeños;
-el R² negativo confirma que el techo de predictibilidad del dominio es muy bajo.
-La regresión lineal es inestable (R² muy negativo) por la alta dimensionalidad (608
-features) y la colinealidad de los precios.
+**Lectura:** RandomForest logra el menor RMSE y el R² menos negativo del benchmark
+(−0.056: es el que menos se aleja de la media), por lo que es la versión **v2 en
+producción**. HistGradientBoosting (campeón de la v1.0.0) sigue siendo el único
+con correlación media **positiva** con el retorno real, un matiz relevante para la
+métrica online del reto (basada en correlación de rangos). El RMSE bajo (~0.015)
+es consecuencia de que los retornos diarios son pequeños; los R² negativos
+confirman que el techo de predictibilidad del dominio es muy bajo. La regresión
+lineal es inestable (R² muy negativo) por la alta dimensionalidad (608 features)
+y la colinealidad de los precios; su regularización con ElasticNet la estabiliza
+hasta el nivel de los ensambles de árboles.
 
 ### Métricas online (leaderboard de Kaggle)
 
@@ -257,9 +284,11 @@ reporta `media / desviación estándar` a lo largo del tiempo.
 > ⚠️ Esta es una **versión simplificada de un solo target con fines didácticos** y **no
 > fue enviada al leaderboard oficial**, por lo que no se dispone de un *score* online
 > público. El proxy más cercano a esa métrica en nuestra evaluación offline es la
-> **correlación media positiva (+0.0095)** del mejor modelo, coherente con la naturaleza
-> de "ventaja pequeña pero persistente" que premia la métrica online. La integración con
-> la API de Kaggle queda planteada como trabajo futuro.
+> **correlación media** predicción-real: solo HistGradientBoosting la tiene positiva
+> (+0.0095), coherente con la naturaleza de "ventaja pequeña pero persistente" que
+> premia la métrica online — por eso se conserva como v1 en el registro junto al
+> campeón por RMSE (RandomForest, v2). La integración con la API de Kaggle queda
+> planteada como trabajo futuro.
 
 ---
 
@@ -270,9 +299,11 @@ reporta `media / desviación estándar` a lo largo del tiempo.
    benchmark → inferencia— en módulos reutilizables (`src/`) y *scripts* ejecutables,
    con rutas centralizadas y datos crudos fuera del repo.
 
-2. **HistGradientBoosting es el mejor modelo** del benchmark: menor RMSE
-   (0.0161), mayor estabilidad entre folds y la única correlación media positiva.
-   Los modelos lineales sufren con la alta dimensionalidad y colinealidad.
+2. **RandomForest es el mejor modelo** del benchmark ampliado a 6 algoritmos
+   (RMSE 0.0154, R² −0.056), y es la versión **v2 en producción** del Model
+   Registry. HistGradientBoosting (v1) conserva la única correlación media
+   positiva. Los modelos lineales sufren con la alta dimensionalidad y
+   colinealidad; ElasticNet los estabiliza pero no alcanza a los ensambles.
 
 3. **El problema tiene un techo de predictibilidad bajo**, como es esperable en
    retornos financieros diarios: el R² negativo indica que se captura muy poca señal.
@@ -283,12 +314,50 @@ reporta `media / desviación estándar` a lo largo del tiempo.
    artificialmente las métricas; `TimeSeriesSplit` da una estimación honesta de cómo
    se comportaría el modelo en producción.
 
-5. **Trabajo futuro:** (i) escalar a los 424 targets multi-objetivo; (ii) validación
-   *walk-forward* con re-entrenamiento periódico; (iii) probar LightGBM y selección de
-   features (RFE ya integrado); (iv) enriquecer con señales exógenas vía **LLMs**
-   (sentimiento de noticias de commodities, eventos macro), línea esbozada en el
-   notebook `2.0-machine-learning-y-llms.ipynb`; (v) integrar la **API de scoring de
-   Kaggle** para obtener una métrica online real.
+5. **El ciclo de vida del modelo está administrado con MLflow** (Curso II): cada
+   algoritmo del benchmark queda como un run reproducible (parámetros, métricas
+   por fold, artefactos y modelo) en DagsHub, y la versión productiva se promueve
+   por el Model Registry con el alias `production` — el despliegue deja de
+   depender de un `.pkl` suelto.
+
+6. **Trabajo futuro:** (i) escalar a los 424 targets multi-objetivo; (ii) validación
+   *walk-forward* con re-entrenamiento periódico; (iii) búsqueda de hiperparámetros
+   sobre los ensambles y selección de features (RFE ya integrado); (iv) enriquecer
+   con señales exógenas vía **LLMs** (sentimiento de noticias de commodities,
+   eventos macro), línea esbozada en el notebook
+   `2.0-machine-learning-y-llms.ipynb`; (v) integrar la **API de scoring de
+   Kaggle** para obtener una métrica online real; (vi) servir features con un
+   *feature store* (Feast).
+
+---
+
+## MLflow — experimentos y modelo productivo
+
+El ciclo de vida del modelo se administra con **MLflow**, con *tracking server*
+remoto en DagsHub:
+
+- **🔗 Experimentos:** https://dagshub.com/jcotakushaka/Example.mlflow
+  (experimento `mitsui-target4`, un run por algoritmo del benchmark)
+- **🔗 Repositorio DagsHub:** https://dagshub.com/jcotakushaka/Example
+
+Cada run registra:
+
+| Qué | Detalle |
+|-----|---------|
+| **Parámetros** | algoritmo, hiperparámetros del estimador, target, nº de folds, selección de features, nº de features y muestras |
+| **Métricas** | RMSE, MAE, R² y correlación **por fold** (con `step`) y **agregadas** (media y std) |
+| **Artefactos** | `cv_folds.csv` (métricas por fold) y `cv_rmse_por_fold.png` (gráfico) |
+| **Modelo** | el `Pipeline` completo serializado (cloudpickle) con `input_example` |
+
+**Modelo productivo:** el mejor modelo del benchmark está registrado en el
+**Model Registry** como **`mitsui-target4-regressor`** con el alias
+**`production`**. `scripts/run_training.py --register` re-entrena, compara y
+promueve automáticamente.
+
+La implementación vive en [src/models/tracking.py](src/models/tracking.py); el
+destino del tracking se configura por variables de entorno (ver
+[.env.example](.env.example)) — sin configurar, los runs quedan en `./mlruns`
+local.
 
 ---
 
@@ -297,15 +366,16 @@ reporta `media / desviación estándar` a lo largo del tiempo.
 ```bash
 pip install -r requirements.txt
 
-# Configurar la ruta de los datos crudos en .env
+# Configurar .env (ver .env.example):
 #   RAW_DATA_DIR=.../mitsui-commodity-prediction-challenge
+#   MLFLOW_TRACKING_URI / USERNAME / PASSWORD  (opcional, para DagsHub)
 python -m src.config            # verifica que las rutas resuelven
 
 # 1. Preprocesamiento  -> data/processed/X.parquet, y.parquet
 python scripts/run_preprocessing.py
 
-# 2. Entrenamiento     -> artifacts/models/model.pkl
-python scripts/run_training.py
+# 2. Entrenamiento     -> artifacts/models/model.pkl + runs en MLflow
+python scripts/run_training.py --register   # --register promueve el mejor a 'production'
 
 # 3. Predicción        -> artifacts/predictions/preds.csv
 python scripts/run_prediction.py
@@ -323,10 +393,12 @@ python scripts/run_prediction.py
 │   ├── reports/          # reportes
 │   └── predictions/      # predicciones (.csv)
 ├── src/                  # módulo de código reutilizable
-│   ├── config.py         # rutas y constantes del problema (lee .env)
+│   ├── config.py         # rutas, constantes y config de MLflow (lee .env)
 │   ├── data/make_dataset.py      # preprocesamiento + feature engineering
 │   ├── features/build_features.py
-│   └── models/{train_model.py, predict_model.py}
+│   ├── models/{train_model.py, predict_model.py}
+│   ├── models/tracking.py        # MLflow: runs, artefactos y Model Registry
+│   └── visualization/visualize.py  # gráficos (artefactos de MLflow)
 └── scripts/              # run_preprocessing / run_training / run_prediction
 ```
 

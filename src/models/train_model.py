@@ -16,8 +16,11 @@ Se reporta media ± desviación de cada métrica, más estable que un corte úni
 
 Algoritmos del benchmark (ver MODEL_NAMES):
     - linear_regression       -> LinearRegression       (con StandardScaler)
+    - elastic_net             -> ElasticNet             (con StandardScaler)
     - decision_tree           -> DecisionTreeRegressor
+    - random_forest           -> RandomForestRegressor
     - hist_gradient_boosting  -> HistGradientBoostingRegressor
+    - lightgbm                -> LGBMRegressor
 
 Funciones reutilizables:
     build_pipeline(model_name)        -> Pipeline
@@ -34,10 +37,11 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
+from lightgbm import LGBMRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import RFE
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import ElasticNet, LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
@@ -50,7 +54,14 @@ from src.models import tracking
 logger = logging.getLogger(__name__)
 
 # Algoritmos disponibles en el benchmark
-MODEL_NAMES = ["linear_regression", "decision_tree", "hist_gradient_boosting"]
+MODEL_NAMES = [
+    "linear_regression",
+    "elastic_net",
+    "decision_tree",
+    "random_forest",
+    "hist_gradient_boosting",
+    "lightgbm",
+]
 
 # Nº de folds por defecto para la validación cruzada temporal
 N_SPLITS = 5
@@ -64,11 +75,32 @@ def _make_estimator(model_name: str):
     """Devuelve (estimador, needs_scaling) para el algoritmo indicado."""
     if model_name == "linear_regression":
         return LinearRegression(), True
+    if model_name == "elastic_net":
+        return ElasticNet(alpha=0.001, l1_ratio=0.5, max_iter=5000, random_state=0), True
     if model_name == "decision_tree":
         return DecisionTreeRegressor(max_depth=8, random_state=0), False
+    if model_name == "random_forest":
+        return (
+            RandomForestRegressor(
+                n_estimators=300, max_depth=10, n_jobs=-1, random_state=0
+            ),
+            False,
+        )
     if model_name == "hist_gradient_boosting":
         return (
             HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, random_state=0),
+            False,
+        )
+    if model_name == "lightgbm":
+        return (
+            LGBMRegressor(
+                n_estimators=300,
+                learning_rate=0.05,
+                num_leaves=31,
+                random_state=0,
+                n_jobs=-1,
+                verbosity=-1,
+            ),
             False,
         )
     raise ValueError(f"Modelo desconocido: {model_name!r}. Opciones: {MODEL_NAMES}")

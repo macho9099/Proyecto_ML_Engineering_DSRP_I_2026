@@ -16,4 +16,4 @@ mlflow==3.15.2
 # experimentación y notebooks
 jupyter
 matplotlib==3.11.1
-lightgbm
+lightgbm==4.7.0
